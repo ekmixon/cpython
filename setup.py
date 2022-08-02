@@ -71,9 +71,7 @@ def get_platform():
         return os.environ["_PYTHON_HOST_PLATFORM"]
 
     # Get value of sys.platform
-    if sys.platform.startswith('osf1'):
-        return 'osf1'
-    return sys.platform
+    return 'osf1' if sys.platform.startswith('osf1') else sys.platform
 
 
 CROSS_COMPILING = ("_PYTHON_HOST_PLATFORM" in os.environ)
@@ -133,7 +131,7 @@ def run_command(cmd):
 def set_compiler_flags(compiler_flags, compiler_py_flags_nodist):
     flags = sysconfig.get_config_var(compiler_flags)
     py_flags_nodist = sysconfig.get_config_var(compiler_py_flags_nodist)
-    sysconfig.get_config_vars()[compiler_flags] = flags + ' ' + py_flags_nodist
+    sysconfig.get_config_vars()[compiler_flags] = f'{flags} {py_flags_nodist}'
 
 
 def add_dir_to_list(dirlist, dir):
@@ -167,7 +165,7 @@ def sysroot_paths(make_vars, subdirs):
         if var is not None:
             m = re.search(r'--sysroot=([^"]\S*|"[^"]+")', var)
             if m is not None:
-                sysroot = m.group(1).strip('"')
+                sysroot = m[1].strip('"')
                 for subdir in subdirs:
                     if os.path.isabs(subdir):
                         subdir = subdir[1:]
@@ -202,7 +200,7 @@ def macosx_sdk_root():
     cflags = sysconfig.get_config_var('CFLAGS')
     m = re.search(r'-isysroot\s*(\S+)', cflags)
     if m is not None:
-        MACOS_SDK_ROOT = m.group(1)
+        MACOS_SDK_ROOT = m[1]
         MACOS_SDK_SPECIFIED = MACOS_SDK_ROOT != '/'
     else:
         MACOS_SDK_ROOT = _osx_support._default_sysroot(
@@ -275,8 +273,9 @@ def validate_tzpath():
         return
 
     tzpaths = base_tzpath.split(os.pathsep)
-    bad_paths = [tzpath for tzpath in tzpaths if not os.path.isabs(tzpath)]
-    if bad_paths:
+    if bad_paths := [
+        tzpath for tzpath in tzpaths if not os.path.isabs(tzpath)
+    ]:
         raise ValueError('TZPATH must contain only absolute paths, '
                          + f'found:\n{tzpaths!r}\nwith invalid paths:\n'
                          + f'{bad_paths!r}')
@@ -324,10 +323,7 @@ class PyBuildExt(build_ext):
             self.disabled_configure.append(ext.name)
         elif state == "missing":
             self.missing.append(ext.name)
-        elif state == "n/a":
-            # not available on current platform
-            pass
-        else:
+        elif state != "n/a":
             # not migrated to MODULE_{name}_STATE yet.
             self.announce(
                 f'WARNING: Makefile is missing module variable for "{ext.name}"',
@@ -345,11 +341,9 @@ class PyBuildExt(build_ext):
         from system include directories.
         """
         upper_name = ext.name.upper()
-        # Parse compiler flags (-I, -D, -U, extra args)
-        cflags = sysconfig.get_config_var(f"MODULE_{upper_name}_CFLAGS")
-        if cflags:
+        if cflags := sysconfig.get_config_var(f"MODULE_{upper_name}_CFLAGS"):
             for token in shlex.split(cflags):
-                switch = token[0:2]
+                switch = token[:2]
                 value = token[2:]
                 if switch == '-I':
                     ext.include_dirs.append(value)
@@ -363,11 +357,9 @@ class PyBuildExt(build_ext):
                 else:
                     ext.extra_compile_args.append(token)
 
-        # Parse linker flags (-L, -l, extra objects, extra args)
-        ldflags = sysconfig.get_config_var(f"MODULE_{upper_name}_LDFLAGS")
-        if ldflags:
+        if ldflags := sysconfig.get_config_var(f"MODULE_{upper_name}_LDFLAGS"):
             for token in shlex.split(ldflags):
-                switch = token[0:2]
+                switch = token[:2]
                 value = token[2:]
                 if switch == '-L':
                     ext.library_dirs.append(value)
@@ -417,9 +409,9 @@ class PyBuildExt(build_ext):
         for ext in self.extensions:
             ext.sources = [ find_module_file(filename, moddirlist)
                             for filename in ext.sources ]
-            # Update dependencies from Makefile
-            makedeps = sysconfig.get_config_var(f"MODULE_{ext.name.upper()}_DEPS")
-            if makedeps:
+            if makedeps := sysconfig.get_config_var(
+                f"MODULE_{ext.name.upper()}_DEPS"
+            ):
                 # remove backslashes from line break continuations
                 ext.depends.extend(
                     dep for dep in makedeps.split() if dep != "\\"
@@ -448,8 +440,7 @@ class PyBuildExt(build_ext):
             if ext.name in sysconf_dis:
                 mods_disabled.append(ext)
 
-        mods_configured = mods_built + mods_disabled
-        if mods_configured:
+        if mods_configured := mods_built + mods_disabled:
             self.extensions = [x for x in self.extensions if x not in
                                mods_configured]
             # Remove the shared libraries built by a previous build.
@@ -474,7 +465,7 @@ class PyBuildExt(build_ext):
         # compilers
         if compiler is not None:
             (ccshared,cflags) = sysconfig.get_config_vars('CCSHARED','CFLAGS')
-            args['compiler_so'] = compiler + ' ' + ccshared + ' ' + cflags
+            args['compiler_so'] = f'{compiler} {ccshared} {cflags}'
         self.compiler.set_executables(**args)
 
     def build_extensions(self):
@@ -512,10 +503,10 @@ class PyBuildExt(build_ext):
         self.summary(mods_built, mods_disabled)
 
     def summary(self, mods_built, mods_disabled):
-        longest = max([len(e.name) for e in self.extensions], default=0)
+        longest = max((len(e.name) for e in self.extensions), default=0)
         if self.failed or self.failed_on_import:
             all_failed = self.failed + self.failed_on_import
-            longest = max(longest, max([len(name) for name in all_failed]))
+            longest = max(longest, max(len(name) for name in all_failed))
 
         def print_three_column(lst):
             lst.sort(key=str.lower)
@@ -656,7 +647,7 @@ class PyBuildExt(build_ext):
                           ' failed: %s' % (ext.name, why), level=3)
             assert not self.inplace
             basename, tail = os.path.splitext(ext_filename)
-            newname = basename + "_failed" + tail
+            newname = f"{basename}_failed{tail}"
             if os.path.exists(newname):
                 os.remove(newname)
             os.rename(ext_filename, newname)
@@ -674,8 +665,7 @@ class PyBuildExt(build_ext):
         tmpfile = os.path.join(self.build_temp, 'multiarch')
         if not os.path.exists(self.build_temp):
             os.makedirs(self.build_temp)
-        ret = run_command(
-            '%s -print-multiarch > %s 2> /dev/null' % (CC, tmpfile))
+        ret = run_command(f'{CC} -print-multiarch > {tmpfile} 2> /dev/null')
         multiarch_path_component = ''
         try:
             if ret == 0:
@@ -685,10 +675,15 @@ class PyBuildExt(build_ext):
             os.unlink(tmpfile)
 
         if multiarch_path_component != '':
-            add_dir_to_list(self.compiler.library_dirs,
-                            '/usr/lib/' + multiarch_path_component)
-            add_dir_to_list(self.compiler.include_dirs,
-                            '/usr/include/' + multiarch_path_component)
+            add_dir_to_list(
+                self.compiler.library_dirs, f'/usr/lib/{multiarch_path_component}'
+            )
+
+            add_dir_to_list(
+                self.compiler.include_dirs,
+                f'/usr/include/{multiarch_path_component}',
+            )
+
             return
 
         if not find_executable('dpkg-architecture'):
@@ -700,16 +695,23 @@ class PyBuildExt(build_ext):
         if not os.path.exists(self.build_temp):
             os.makedirs(self.build_temp)
         ret = run_command(
-            'dpkg-architecture %s -qDEB_HOST_MULTIARCH > %s 2> /dev/null' %
-            (opt, tmpfile))
+            f'dpkg-architecture {opt} -qDEB_HOST_MULTIARCH > {tmpfile} 2> /dev/null'
+        )
+
         try:
             if ret == 0:
                 with open(tmpfile) as fp:
                     multiarch_path_component = fp.readline().strip()
-                add_dir_to_list(self.compiler.library_dirs,
-                                '/usr/lib/' + multiarch_path_component)
-                add_dir_to_list(self.compiler.include_dirs,
-                                '/usr/include/' + multiarch_path_component)
+                add_dir_to_list(
+                    self.compiler.library_dirs,
+                    f'/usr/lib/{multiarch_path_component}',
+                )
+
+                add_dir_to_list(
+                    self.compiler.include_dirs,
+                    f'/usr/include/{multiarch_path_component}',
+                )
+
         finally:
             os.unlink(tmpfile)
 
@@ -721,7 +723,7 @@ class PyBuildExt(build_ext):
             # to msys style /c/folder1/folder2/folder3/folder4
             drive = path[0].lower()
             left = path[2:].replace("\\", "/")
-            return "/" + drive + left
+            return f"/{drive}{left}"
 
         def add_search_path(line):
             # On Windows building machine, VxWorks does
@@ -740,7 +742,7 @@ class PyBuildExt(build_ext):
         tmpfile = os.path.join(self.build_temp, 'wrccpaths')
         os.makedirs(self.build_temp, exist_ok=True)
         try:
-            ret = run_command('%s --print-search-dirs >%s' % (CC, tmpfile))
+            ret = run_command(f'{CC} --print-search-dirs >{tmpfile}')
             if ret:
                 return
             with open(tmpfile) as fp:
@@ -763,14 +765,14 @@ class PyBuildExt(build_ext):
             os.makedirs(self.build_temp)
         # bpo-38472: With a German locale, GCC returns "gcc-Version 9.1.0
         # (GCC)", whereas it returns "gcc version 9.1.0" with the C locale.
-        ret = run_command('LC_ALL=C %s -E -v - </dev/null 2>%s 1>/dev/null' % (CC, tmpfile))
+        ret = run_command(f'LC_ALL=C {CC} -E -v - </dev/null 2>{tmpfile} 1>/dev/null')
         is_gcc = False
         is_clang = False
         in_incdirs = False
         try:
             if ret == 0:
                 with open(tmpfile) as fp:
-                    for line in fp.readlines():
+                    for line in fp:
                         if line.startswith("gcc version"):
                             is_gcc = True
                         elif line.startswith("clang version"):
@@ -805,8 +807,7 @@ class PyBuildExt(build_ext):
                 ('LDFLAGS', '-R', self.compiler.runtime_library_dirs),
                 ('LDFLAGS', '-L', self.compiler.library_dirs),
                 ('CPPFLAGS', '-I', self.compiler.include_dirs)):
-            env_val = sysconfig.get_config_var(env_var)
-            if env_val:
+            if env_val := sysconfig.get_config_var(env_var):
                 parser = argparse.ArgumentParser()
                 parser.add_argument(arg_name, dest="dirs", action="append")
 
@@ -1153,10 +1154,9 @@ class PyBuildExt(build_ext):
             '_ctypes/stgdict.c',
             '_ctypes/cfield.c',
         ]
-        malloc_closure = sysconfig.get_config_var(
+        if malloc_closure := sysconfig.get_config_var(
             "MODULE__CTYPES_MALLOC_CLOSURE"
-        )
-        if malloc_closure:
+        ):
             src.append(malloc_closure)
 
         self.addext(Extension('_ctypes', src))
